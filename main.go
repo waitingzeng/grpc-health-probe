@@ -15,11 +15,7 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"flag"
-	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/signal"
@@ -27,7 +23,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 )
@@ -38,12 +33,7 @@ var (
 	flUserAgent     string
 	flConnTimeout   time.Duration
 	flRPCTimeout    time.Duration
-	flTLS           bool
-	flTLSNoVerify   bool
-	flTLSCACert     string
-	flTLSClientCert string
-	flTLSClientKey  string
-	flTLSServerName string
+
 	flVerbose       bool
 )
 
@@ -67,13 +57,6 @@ func init() {
 	// timeouts
 	flagSet.DurationVar(&flConnTimeout, "connect-timeout", time.Second, "timeout for establishing connection")
 	flagSet.DurationVar(&flRPCTimeout, "rpc-timeout", time.Second, "timeout for health check rpc")
-	// tls settings
-	flagSet.BoolVar(&flTLS, "tls", false, "use TLS (default: false, INSECURE plaintext transport)")
-	flagSet.BoolVar(&flTLSNoVerify, "tls-no-verify", false, "(with -tls) don't verify the certificate (INSECURE) presented by the server (default: false)")
-	flagSet.StringVar(&flTLSCACert, "tls-ca-cert", "", "(with -tls, optional) file containing trusted certificates for verifying server")
-	flagSet.StringVar(&flTLSClientCert, "tls-client-cert", "", "(with -tls, optional) client certificate for authenticating to the server (requires -tls-client-key)")
-	flagSet.StringVar(&flTLSClientKey, "tls-client-key", "", "(with -tls) client private key for authenticating to the server (requires -tls-client-cert)")
-	flagSet.StringVar(&flTLSServerName, "tls-server-name", "", "(with -tls) override the hostname used to verify the server certificate")
 	flagSet.BoolVar(&flVerbose, "v", false, "verbose logs")
 
 	err := flagSet.Parse(os.Args[1:])
@@ -95,74 +78,12 @@ func init() {
 	if flRPCTimeout <= 0 {
 		argError("-rpc-timeout must be greater than zero (specified: %v)", flRPCTimeout)
 	}
-	if !flTLS && flTLSNoVerify {
-		argError("specified -tls-no-verify without specifying -tls")
-	}
-	if !flTLS && flTLSCACert != "" {
-		argError("specified -tls-ca-cert without specifying -tls")
-	}
-	if !flTLS && flTLSClientCert != "" {
-		argError("specified -tls-client-cert without specifying -tls")
-	}
-	if !flTLS && flTLSServerName != "" {
-		argError("specified -tls-server-name without specifying -tls")
-	}
-	if flTLSClientCert != "" && flTLSClientKey == "" {
-		argError("specified -tls-client-cert without specifying -tls-client-key")
-	}
-	if flTLSClientCert == "" && flTLSClientKey != "" {
-		argError("specified -tls-client-key without specifying -tls-client-cert")
-	}
-	if flTLSNoVerify && flTLSCACert != "" {
-		argError("cannot specify -tls-ca-cert with -tls-no-verify (CA cert would not be used)")
-	}
-	if flTLSNoVerify && flTLSServerName != "" {
-		argError("cannot specify -tls-server-name with -tls-no-verify (server name would not be used)")
-	}
 
 	if flVerbose {
 		log.Printf("parsed options:")
 		log.Printf("> addr=%s conn_timeout=%v rpc_timeout=%v", flAddr, flConnTimeout, flRPCTimeout)
-		log.Printf("> tls=%v", flTLS)
-		if flTLS {
-			log.Printf("  > no-verify=%v ", flTLSNoVerify)
-			log.Printf("  > ca-cert=%s", flTLSCACert)
-			log.Printf("  > client-cert=%s", flTLSClientCert)
-			log.Printf("  > client-key=%s", flTLSClientKey)
-			log.Printf("  > server-name=%s", flTLSServerName)
-		}
-	}
-}
 
-func buildCredentials(skipVerify bool, caCerts, clientCert, clientKey, serverName string) (credentials.TransportCredentials, error) {
-	var cfg tls.Config
-
-	if clientCert != "" && clientKey != "" {
-		keyPair, err := tls.LoadX509KeyPair(clientCert, clientKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load tls client cert/key pair. error=%v", err)
-		}
-		cfg.Certificates = []tls.Certificate{keyPair}
 	}
-
-	if skipVerify {
-		cfg.InsecureSkipVerify = true
-	} else if caCerts != "" {
-		// override system roots
-		rootCAs := x509.NewCertPool()
-		pem, err := ioutil.ReadFile(caCerts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load root CA certificates from file (%s) error=%v", caCerts, err)
-		}
-		if !rootCAs.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("no root CA certs parsed from file %s", caCerts)
-		}
-		cfg.RootCAs = rootCAs
-	}
-	if serverName != "" {
-		cfg.ServerName = serverName
-	}
-	return credentials.NewTLS(&cfg), nil
 }
 
 func main() {
@@ -185,17 +106,8 @@ func main() {
 	opts := []grpc.DialOption{
 		grpc.WithUserAgent(flUserAgent),
 		grpc.WithBlock()}
-	if flTLS {
-		creds, err := buildCredentials(flTLSNoVerify, flTLSCACert, flTLSClientCert, flTLSClientKey, flTLSServerName)
-		if err != nil {
-			log.Printf("failed to initialize tls credentials. error=%v", err)
-			retcode = StatusInvalidArguments
-			return
-		}
-		opts = append(opts, grpc.WithTransportCredentials(creds))
-	} else {
-		opts = append(opts, grpc.WithInsecure())
-	}
+
+	opts = append(opts, grpc.WithInsecure())
 
 	if flVerbose {
 		log.Print("establishing connection")
